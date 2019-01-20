@@ -22,12 +22,25 @@ type IpvsPlugin struct {
   Tempfile string
 }
 
+// IpvsVirtualServers struct
+type IpvsVirtualServers struct {
+  VirtualServers []IpvsVirtualServer
+}
+
 // IpvsVirtualServer struct
 type IpvsVirtualServer struct {
   IPAddress string
   Port string
   Protocol string
   Schedule string
+  RealServers []IpvsRealServer
+}
+
+// IpvsRealServer stuct
+type IpvsRealServer struct {
+  IPAddress string
+  Port string
+  Forward string
 }
 
 // IpvsRealServerStat struct
@@ -46,33 +59,135 @@ type IpvsServer struct {
   Port string
 }
 
-// define graph
-var graphdef = map[string]mp.Graphs{
-  "proc.net.ip_vs.*.active_conns": {
-    Label: "IPVS Real Server (ActiveConn)",
-    Unit: mp.UnitInteger,
-    Metrics: []mp.Metrics {
-      {Name: "*", Label: "Real Server", Diff: false},
-    },
-  },
-  "proc.net.ip_vs.*.inactive_conns": {
-    Label: "IPVS Real Server (InActConn)",
-    Unit: mp.UnitInteger,
-    Metrics: []mp.Metrics {
-      {Name: "*", Label: "Real Server", Diff: false},
-    },
-  },
-  "proc.net.ip_vs.*.weight": {
-    Label: "IPVS Real Server (Weight)",
-    Unit: mp.UnitInteger,
-    Metrics: []mp.Metrics {
-      {Name: "*", Label: "Real Server", Diff: false},
-    },
-  },
-}
+// GraphNamePrefixTemplate ...
+var GraphNamePrefixTemplate = "proc.net.ip_vs.*"
 
 // GraphDefinition : interface for go-mackerel-plugin
+// var graphdef = map[string]mp.Graphs{
+//   "proc.net.ip_vs.*.active_conns": {
+//     Unit: mp.UnitInteger,
+//     Metrics: []mp.Metrics {
+//       {Name: "192_168_1_1_80", Label: "192.168.1.1:80", Diff: false},
+//       {Name: "192_168_1_2_80", Label: "192.168.1.2:80", Diff: false},
+//       {Name: "192_168_1_1_443", Label: "192.168.1.1:443", Diff: false},
+//       {Name: "192_168_1_2_443", Label: "192.168.1.2:443", Diff: false},
+//       {Name: "192_168_1_53_53", Label: "192.168.1.53:53", Diff: false},
+//       {Name: "192_168_2_53_53", Label: "192.168.2.53:53", Diff: false},
+//     },
+//   },
+//   "proc.net.ip_vs.*.inactive_conns": {
+//     Unit: mp.UnitInteger,
+//     Metrics: []mp.Metrics {
+//       {Name: "192_168_1_1_80", Label: "192.168.1.1:80", Diff: false},
+//       {Name: "192_168_1_2_80", Label: "192.168.1.2:80", Diff: false},
+//       {Name: "192_168_1_1_443", Label: "192.168.1.1:443", Diff: false},
+//       {Name: "192_168_1_2_443", Label: "192.168.1.2:443", Diff: false},
+//       {Name: "192_168_1_53_53", Label: "192.168.1.53:53", Diff: false},
+//       {Name: "192_168_2_53_53", Label: "192.168.2.53:53", Diff: false},
+//     },
+//   },
+//   "proc.net.ip_vs.*.weight": {
+//     Unit: mp.UnitInteger,
+//     Metrics: []mp.Metrics {
+//       {Name: "192_168_1_1_80", Label: "192.168.1.1:80", Diff: false},
+//       {Name: "192_168_1_2_80", Label: "192.168.1.2:80", Diff: false},
+//       {Name: "192_168_1_1_443", Label: "192.168.1.1:443", Diff: false},
+//       {Name: "192_168_1_2_443", Label: "192.168.1.2:443", Diff: false},
+//       {Name: "192_168_1_53_53", Label: "192.168.1.53:53", Diff: false},
+//       {Name: "192_168_2_53_53", Label: "192.168.2.53:53", Diff: false},
+//     },
+//   },
+// }
 func (r IpvsPlugin) GraphDefinition() map[string]mp.Graphs {
+  file, _ := os.Open(r.Target)
+  defer file.Close()
+  vss, _ := ParseStructer(file)
+  return GenerateGraphDefinition(vss)
+}
+
+// ParseStructer : Parse /proc/net/ip_vs to IpvsVirtualServers
+func ParseStructer(stat io.Reader) (IpvsVirtualServers, error) {
+  var vss IpvsVirtualServers
+  var vs IpvsVirtualServer
+  scanner := bufio.NewScanner(stat)
+  for scanner.Scan() {
+    fields := strings.Fields(scanner.Text())
+    if fields[0] == "IP" && fields[1] == "Virtual" && fields[2] == "Server" {
+      // ignore `IP Virtual Server version ...`
+      continue
+    }
+    if fields[0] == "Prot" && fields[1] == "LocalAddress:Port" {
+      // ignore `Prot LocalAddress:Port Scheduler Flags`
+      continue
+    }
+    switch {
+    case fields[0] == "TCP" || fields[0] == "UDP" || fields[0] == "SCTP" || fields[0] == "AM" || fields[0] == "ESP":
+      // Virtual Server status format
+      // <Protocol> <Virtual IP in hex>:<Port number in Hex> <schedule>
+      if len(fields) != 3 {
+        return vss, errors.New("Virtual Server infomation must have 3 fields")
+      }
+      t, err := Hex2IpvsServer(fields[1])
+      if err != nil {
+        return vss, err
+      }
+      vs.IPAddress = t.IPAddress
+      vs.Port = t.Port
+      vs.Protocol = fields[0]
+      vs.Schedule = fields[2]
+      vss.VirtualServers = append(vss.VirtualServers, vs)
+
+    case fields[0] == "->":
+      if fields[1] == "RemoteAddress:Port" {
+        continue
+      }
+      if len(fields) != 6 {
+        // Skip header line (`-> RemoteAddress:Port Forward Weight ActiveConn InActConn`)
+        // Real Server infomation must have 6 fields
+        return vss, errors.New("Real Server infomation must have 6 fields")
+      }
+      var rs IpvsRealServer
+      t, err := Hex2IpvsServer(fields[1])
+      if err != nil {
+        return vss, err
+      }
+      rs.IPAddress = t.IPAddress
+      rs.Port = t.Port
+      rs.Forward = fields[2]
+      i := len(vss.VirtualServers) - 1
+      vss.VirtualServers[i].RealServers = append(vss.VirtualServers[i].RealServers, rs)
+    }
+  }
+  return vss, nil
+}
+
+// GenerateGraphDefinition IpvsVirtualServers to map[string]mp.Graphs
+func GenerateGraphDefinition(vss IpvsVirtualServers) map[string]mp.Graphs {
+  var graphdef = make(map[string]mp.Graphs)
+  for _, vs := range vss.VirtualServers {
+    for _, rs := range vs.RealServers {
+      var n = [...]string{
+        strings.Replace(rs.IPAddress,".","_",-1),
+        rs.Port,
+      }
+      rsm := mp.Metrics{
+        Name: strings.Join(n[:],"_"),
+        Label: rs.IPAddress + ":" + rs.Port,
+      }
+      graphdef[GraphNamePrefixTemplate + ".active_conns"] = mp.Graphs{
+        Unit: mp.UnitInteger,
+        Metrics: append(graphdef[GraphNamePrefixTemplate + ".active_conns"].Metrics, rsm),
+      }
+      graphdef[GraphNamePrefixTemplate + ".inactive_conns"] = mp.Graphs{
+        Unit: mp.UnitInteger,
+        Metrics: append(graphdef[GraphNamePrefixTemplate + ".inactive_conns"].Metrics, rsm),
+      }
+      graphdef[GraphNamePrefixTemplate + ".weight"] = mp.Graphs{
+        Unit: mp.UnitInteger,
+        Metrics: append(graphdef[GraphNamePrefixTemplate + ".weight"].Metrics, rsm),
+      }
+    }
+  }
   return graphdef
 }
 
@@ -82,11 +197,12 @@ func (r IpvsPlugin) FetchMetrics() (map[string]float64, error) {
   if err != nil {
     return nil, err
   }
+  defer file.Close()
 
   return Parse(file)
 }
 
-// Parse : /proc/net/ip_vs parser
+// Parse : /proc/net/ip_vs parser for FetchMetrics
 func Parse(stat io.Reader) (map[string]float64, error) {
   data := make(map[string]float64)
   scanner := bufio.NewScanner(stat)
@@ -97,7 +213,7 @@ func Parse(stat io.Reader) (map[string]float64, error) {
       // ignore `IP Virtual Server version ...`
       continue
     }
-    if fields[0] == "Port" && fields[1] == "LocalAddress:Port" {
+    if fields[0] == "Prot" && fields[1] == "LocalAddress:Port" {
       // ignore `Prot LocalAddress:Port Scheduler Flags`
       continue
     }
@@ -174,7 +290,6 @@ func Hex2IpvsServer(s string) (IpvsServer, error) {
 
 // GraphKey ...
 func GraphKey(base []string) (string, error) {
-  graphNamePrefixTemplate := "proc.net.ip_vs.*"
   var a IpvsVirtualServer
   a.Protocol = base[0]
   a.Schedule = base[2]
@@ -190,8 +305,7 @@ func GraphKey(base []string) (string, error) {
     a.Protocol,
     a.Schedule,
   }
-  return strings.Replace(graphNamePrefixTemplate, "*", strings.Join(m[:],"_"), 1), nil
-  
+  return strings.Replace(GraphNamePrefixTemplate, "*", strings.Join(m[:],"_"), 1), nil
 }
 
 // Do : Do plugin
