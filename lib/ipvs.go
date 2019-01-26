@@ -64,37 +64,22 @@ var GraphNamePrefixTemplate = "proc.net.ip_vs.*"
 
 // GraphDefinition : interface for go-mackerel-plugin
 // var graphdef = map[string]mp.Graphs{
-//   "proc.net.ip_vs.*.active_conns": {
+//   "proc.net.ip_vs.192_168_0_1_80_TCP_wrr.active_conns": {
 //     Unit: mp.UnitInteger,
 //     Metrics: []mp.Metrics {
-//       {Name: "192_168_1_1_80", Label: "192.168.1.1:80", Diff: false},
-//       {Name: "192_168_1_2_80", Label: "192.168.1.2:80", Diff: false},
-//       {Name: "192_168_1_1_443", Label: "192.168.1.1:443", Diff: false},
-//       {Name: "192_168_1_2_443", Label: "192.168.1.2:443", Diff: false},
-//       {Name: "192_168_1_53_53", Label: "192.168.1.53:53", Diff: false},
-//       {Name: "192_168_2_53_53", Label: "192.168.2.53:53", Diff: false},
+//       {Name: "*", Diff: false, Stacked: false},
 //     },
 //   },
-//   "proc.net.ip_vs.*.inactive_conns": {
+//   "proc.net.ip_vs.192_168_0_1_80_TCP_wrr.inactive_conns": {
 //     Unit: mp.UnitInteger,
 //     Metrics: []mp.Metrics {
-//       {Name: "192_168_1_1_80", Label: "192.168.1.1:80", Diff: false},
-//       {Name: "192_168_1_2_80", Label: "192.168.1.2:80", Diff: false},
-//       {Name: "192_168_1_1_443", Label: "192.168.1.1:443", Diff: false},
-//       {Name: "192_168_1_2_443", Label: "192.168.1.2:443", Diff: false},
-//       {Name: "192_168_1_53_53", Label: "192.168.1.53:53", Diff: false},
-//       {Name: "192_168_2_53_53", Label: "192.168.2.53:53", Diff: false},
+//       {Name: "*", Diff: false, Stacked: false},
 //     },
 //   },
-//   "proc.net.ip_vs.*.weight": {
+//   "proc.net.ip_vs.192_168_0_1_80_TCP_wrr.weight": {
 //     Unit: mp.UnitInteger,
 //     Metrics: []mp.Metrics {
-//       {Name: "192_168_1_1_80", Label: "192.168.1.1:80", Diff: false},
-//       {Name: "192_168_1_2_80", Label: "192.168.1.2:80", Diff: false},
-//       {Name: "192_168_1_1_443", Label: "192.168.1.1:443", Diff: false},
-//       {Name: "192_168_1_2_443", Label: "192.168.1.2:443", Diff: false},
-//       {Name: "192_168_1_53_53", Label: "192.168.1.53:53", Diff: false},
-//       {Name: "192_168_2_53_53", Label: "192.168.2.53:53", Diff: false},
+//       {Name: "*", Diff: false, Stacked: false},
 //     },
 //   },
 // }
@@ -164,28 +149,35 @@ func ParseStructer(stat io.Reader) (IpvsVirtualServers, error) {
 // GenerateGraphDefinition IpvsVirtualServers to map[string]mp.Graphs
 func GenerateGraphDefinition(vss IpvsVirtualServers) map[string]mp.Graphs {
   var graphdef = make(map[string]mp.Graphs)
+  var graphkeyprefix string
   for _, vs := range vss.VirtualServers {
-    for _, rs := range vs.RealServers {
-      var n = [...]string{
-        strings.Replace(rs.IPAddress,".","_",-1),
-        rs.Port,
-      }
-      rsm := mp.Metrics{
-        Name: strings.Join(n[:],"_"),
-        Label: rs.IPAddress + ":" + rs.Port,
-      }
-      graphdef[GraphNamePrefixTemplate + ".active_conns"] = mp.Graphs{
-        Unit: mp.UnitInteger,
-        Metrics: append(graphdef[GraphNamePrefixTemplate + ".active_conns"].Metrics, rsm),
-      }
-      graphdef[GraphNamePrefixTemplate + ".inactive_conns"] = mp.Graphs{
-        Unit: mp.UnitInteger,
-        Metrics: append(graphdef[GraphNamePrefixTemplate + ".inactive_conns"].Metrics, rsm),
-      }
-      graphdef[GraphNamePrefixTemplate + ".weight"] = mp.Graphs{
-        Unit: mp.UnitInteger,
-        Metrics: append(graphdef[GraphNamePrefixTemplate + ".weight"].Metrics, rsm),
-      }
+    var m = [...]string{
+      strings.Replace(vs.IPAddress,".","_",-1),
+      vs.Port,
+      vs.Protocol,
+      vs.Schedule,
+    }
+    graphkeyprefix = strings.Replace(GraphNamePrefixTemplate,"*",strings.Join(m[:],"_"), 1)
+    graphdef[graphkeyprefix + ".active_conns"] = mp.Graphs{
+      Unit: mp.UnitInteger,
+      Label: vs.Protocol + " " + vs.IPAddress + ":" + vs.Port + " " + vs.Schedule + "(active conns)",
+      Metrics: []mp.Metrics{
+        {Name: "#", Diff: false, Stacked: false},
+      },
+    }
+    graphdef[graphkeyprefix + ".inactive_conns"] = mp.Graphs{
+      Unit: mp.UnitInteger,
+      Label: vs.Protocol + " " + vs.IPAddress + ":" + vs.Port + " " + vs.Schedule + "(inactive conns)",
+      Metrics: []mp.Metrics{
+        {Name: "#", Diff: false, Stacked: false},
+      },
+    }
+    graphdef[graphkeyprefix + ".weight"] = mp.Graphs{
+      Unit: mp.UnitInteger,
+      Label: vs.Protocol + " " + vs.IPAddress + ":" + vs.Port + " " + vs.Schedule + "(weight)",
+      Metrics: []mp.Metrics{
+        {Name: "#", Diff: false, Stacked: false},
+      },
     }
   }
   return graphdef
