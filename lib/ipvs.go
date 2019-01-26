@@ -91,6 +91,23 @@ func (r IpvsPlugin) GraphDefinition() map[string]mp.Graphs {
 }
 
 // ParseStructer : Parse /proc/net/ip_vs to IpvsVirtualServers
+// TCP C0A80001:0050 wrr
+//   -> C0A80101:0050      Tunnel  10     3          242
+//   -> C0A80102:0050      Tunnel  100    35         120
+// =>
+// vss := IpvsVirtualServers{
+//   VirtualServers: []IpvsVirtualServer{
+//     {
+//       IPAddress: "192.168.0.1",
+//       Port: "80",
+//       Protocol: "TCP",
+//       Schedule: "wrr",
+//       RealServers: []IpvsRealServer{
+//         { IPAddress: "192.168.1.1", Port: "80", Forward: "Tunnel"},
+//         { IPAddress: "192.168.1.2", Port: "80", Forward: "Tunnel"},
+//       },
+//     },
+//   }
 func ParseStructer(stat io.Reader) (IpvsVirtualServers, error) {
   var vss IpvsVirtualServers
   var vs IpvsVirtualServer
@@ -195,6 +212,14 @@ func (r IpvsPlugin) FetchMetrics() (map[string]float64, error) {
 }
 
 // Parse : /proc/net/ip_vs parser for FetchMetrics
+// TCP C0A80001:0050 wrr
+//   -> C0A80101:0050      Tunnel  10     3          242
+// =>
+// data = {
+//   { proc.net.ip_vs.192_168_0_1_80_TCP_wrr.weight.192_168_1_1_80: 10 },
+//   { proc.net.ip_vs.192_168_0_1_80_TCP_wrr.active_conns.192_168_1_1_80: 3 },
+//   { proc.net.ip_vs.192_168_0_1_80_TCP_wrr.inactive_conns.192_168_1_1_80: 242 },
+// }
 func Parse(stat io.Reader) (map[string]float64, error) {
   data := make(map[string]float64)
   scanner := bufio.NewScanner(stat)
@@ -264,6 +289,12 @@ func Parse(stat io.Reader) (map[string]float64, error) {
 }
 
 // Hex2IpvsServer : "<IP Addr in hex>:<Port in hex>" to IpvsServer
+// C0A80001:0050
+// =>
+// data = {
+//   IPAddress: "192.168.0.1",
+//   Port: "80",
+// }
 func Hex2IpvsServer(s string) (IpvsServer, error) {
   var data IpvsServer
   a := strings.Split(s, ":")
@@ -280,7 +311,8 @@ func Hex2IpvsServer(s string) (IpvsServer, error) {
   return data, nil
 }
 
-// GraphKey ...
+// GraphKey : convert virtual server string to graphkey
+// `TCP C0A80001:0050 wrr` => `proc.net.ip_vs` + `.192_168_0_1_80_TCP_wrr`
 func GraphKey(base []string) (string, error) {
   var a IpvsVirtualServer
   a.Protocol = base[0]
